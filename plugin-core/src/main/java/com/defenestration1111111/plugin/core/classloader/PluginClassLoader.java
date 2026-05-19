@@ -1,5 +1,6 @@
 package com.defenestration1111111.plugin.core.classloader;
 
+import java.io.IOException;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.util.List;
@@ -18,6 +19,7 @@ public final class PluginClassLoader extends URLClassLoader {
 
     private final Set<String> exportedPackages;
     private final ClassLoader hostClassLoader;
+    private volatile boolean closed = false;
 
     public PluginClassLoader(URL[] urls, ClassLoader hostClassLoader, Set<String> exportedPackages) {
         super(urls, ClassLoader.getPlatformClassLoader());
@@ -30,6 +32,17 @@ public final class PluginClassLoader extends URLClassLoader {
         this.hostClassLoader = hostClassLoader;
         this.exportedPackages = BASELINE_EXPORTED_PACKAGES;
     }
+
+    @Override
+    public void close() throws IOException {
+        this.closed = true;
+        super.close();
+    }
+
+    public boolean isClosed() {
+        return this.closed;
+    }
+
 
     @Override
     protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
