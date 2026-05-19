@@ -44,6 +44,12 @@ public final class PluginJarBuilder {
         return withEntry(path, content.getBytes(StandardCharsets.UTF_8));
     }
 
+    public PluginJarBuilder withCompiledClass(String fqn, String source) {
+        Map<String, byte[]> classes = InMemoryCompiler.compile(fqn, source);
+        classes.forEach((name, bytes) -> entries.put(name.replace('.', '/') + ".class", bytes));
+        return this;
+    }
+
     public Path buildAt(Path directory, String filename) throws IOException {
         Files.createDirectories(directory);
         Path jarPath = directory.resolve(filename);
