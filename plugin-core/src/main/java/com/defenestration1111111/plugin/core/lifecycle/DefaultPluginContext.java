@@ -3,20 +3,18 @@ package com.defenestration1111111.plugin.core.lifecycle;
 import com.defenestration1111111.plugin.api.ExtensionPoint;
 import com.defenestration1111111.plugin.api.PluginContext;
 import com.defenestration1111111.plugin.api.PluginDescriptor;
+import com.defenestration1111111.plugin.core.extension.ExtensionRegistry;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.ConcurrentHashMap;
 
 final class DefaultPluginContext implements PluginContext {
 
     private final PluginDescriptor descriptor;
-    private final Map<Class<?>, List<Object>> registrations = new ConcurrentHashMap<>();
+    private final ExtensionRegistry registry;
 
-    DefaultPluginContext(PluginDescriptor descriptor) {
+    DefaultPluginContext(PluginDescriptor descriptor, ExtensionRegistry registry) {
         this.descriptor = Objects.requireNonNull(descriptor, "descriptor");
+        this.registry = Objects.requireNonNull(registry, "registry");
     }
 
     @Override
@@ -26,12 +24,6 @@ final class DefaultPluginContext implements PluginContext {
 
     @Override
     public <T extends ExtensionPoint> void register(Class<T> extensionPoint, T extension) {
-        Objects.requireNonNull(extensionPoint, "extensionPoint");
-        Objects.requireNonNull(extension, "extension");
-        registrations.computeIfAbsent(extensionPoint, k -> new ArrayList<>()).add(extension);
-    }
-
-    Map<Class<?>, List<Object>> registrations() {
-        return registrations;
+        registry.register(descriptor().id(), extensionPoint, extension);
     }
 }

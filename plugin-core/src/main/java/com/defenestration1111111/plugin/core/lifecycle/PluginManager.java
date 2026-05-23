@@ -1,22 +1,17 @@
 package com.defenestration1111111.plugin.core.lifecycle;
 
-import com.defenestration1111111.plugin.api.Plugin;
-import com.defenestration1111111.plugin.api.PluginDescriptor;
-import com.defenestration1111111.plugin.api.PluginLifecycleException;
-import com.defenestration1111111.plugin.api.PluginLoadException;
+import com.defenestration1111111.plugin.api.*;
 import com.defenestration1111111.plugin.core.classloader.PluginClassLoader;
 import com.defenestration1111111.plugin.core.discovery.DiscoveredPlugin;
 import com.defenestration1111111.plugin.core.discovery.DiscoveryReport;
+import com.defenestration1111111.plugin.core.extension.ExtensionRegistry;
 
 import java.io.IOException;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.net.MalformedURLException;
 import java.net.URL;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Optional;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 public final class PluginManager implements AutoCloseable {
@@ -25,6 +20,7 @@ public final class PluginManager implements AutoCloseable {
     private final Set<String> exportedPackages;
     private final Map<String, ManagedPlugin> plugins = new ConcurrentHashMap<>();
     private final Map<String, DefaultPluginContext> contexts = new ConcurrentHashMap<>();
+    private final ExtensionRegistry extensionRegistry = new ExtensionRegistry();
 
     public PluginManager(ClassLoader hostClassLoader) {
         this(hostClassLoader, PluginClassLoader.BASELINE_EXPORTED_PACKAGES);
@@ -89,13 +85,14 @@ public final class PluginManager implements AutoCloseable {
         mp.lock.lock();
         try {
             requirePhase(mp, Phase.LOADED, "start");
-            DefaultPluginContext ctx = new DefaultPluginContext(mp.descriptor);
+            DefaultPluginContext ctx = new DefaultPluginContext(mp.descriptor, extensionRegistry);
             try {
                 contexts.put(id, ctx);
                 mp.instance.start(ctx);
                 mp.phase = Phase.STARTED;
             } catch (Throwable t) {
                 contexts.remove(id);
+                extensionRegistry.unregisterAll(id);
                 fail(mp, t, mp.classLoader);
                 throw asPluginException(t, "Failed to start plugin " + id);
             }
@@ -117,6 +114,7 @@ public final class PluginManager implements AutoCloseable {
                 throw asPluginException(t, "Failed to stop plugin " + id);
             } finally {
                 contexts.remove(id);
+                extensionRegistry.unregisterAll(id);
             }
         } finally {
             mp.lock.unlock();
@@ -177,6 +175,10 @@ public final class PluginManager implements AutoCloseable {
 
     public Set<String> ids() {
         return Set.copyOf(plugins.keySet());
+    }
+
+    public <T extends ExtensionPoint> List<T> getExtensions(Class<T> extensionPoint) {
+        return extensionRegistry.getExtensions(extensionPoint);
     }
 
     @Override

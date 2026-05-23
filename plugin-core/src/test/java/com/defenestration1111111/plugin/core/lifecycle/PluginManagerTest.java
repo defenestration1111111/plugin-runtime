@@ -6,6 +6,7 @@ import com.defenestration1111111.plugin.api.PluginLoadException;
 import com.defenestration1111111.plugin.core.classloader.PluginClassLoader;
 import com.defenestration1111111.plugin.core.discovery.DiscoveredPlugin;
 import com.defenestration1111111.plugin.core.util.PluginJarBuilder;
+import com.defenestration1111111.plugin.core.util.TestGreeter;
 import com.defenestration1111111.plugin.core.util.TestRecorder;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -13,6 +14,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -385,6 +387,99 @@ class PluginManagerTest {
         assertThat(TestRecorder.stopCount.get()).isEqualTo(2);
         assertThat(clA.isClosed()).isTrue();
         assertThat(clB.isClosed()).isTrue();
+    }
+
+    // ---- extensions ----
+
+    private static final String GREETER_PLUGIN_BODY = """
+            package p;
+            import com.defenestration1111111.plugin.api.Plugin;
+            import com.defenestration1111111.plugin.api.PluginContext;
+            import com.defenestration1111111.plugin.core.util.TestGreeter;
+            public class A implements Plugin, TestGreeter {
+                private final String word;
+                public A() { this.word = "hello"; }
+                @Override public void start(PluginContext ctx) {
+                    ctx.register(TestGreeter.class, this);
+                }
+                @Override public void stop() {}
+                @Override public String greet() { return word; }
+            }
+            """;
+
+    @Test
+    void pluginRegistrationsAreVisibleAfterStart() throws Exception {
+        manager.install(pluginWith("g1", "p.A", GREETER_PLUGIN_BODY));
+        boot("g1");
+
+        List<TestGreeter> greeters = manager.getExtensions(TestGreeter.class);
+        assertThat(greeters).hasSize(1);
+        assertThat(greeters.get(0).greet()).isEqualTo("hello");
+    }
+
+    @Test
+    void getExtensionsForUnknownPointIsEmpty() {
+        assertThat(manager.getExtensions(TestGreeter.class)).isEmpty();
+    }
+
+    @Test
+    void stopRemovesPluginRegistrations() throws Exception {
+        manager.install(pluginWith("g1", "p.A", GREETER_PLUGIN_BODY));
+        boot("g1");
+        assertThat(manager.getExtensions(TestGreeter.class)).hasSize(1);
+
+        manager.stop("g1");
+        assertThat(manager.getExtensions(TestGreeter.class)).isEmpty();
+    }
+
+    @Test
+    void multiplePluginsContributeAndStopRemovesOnlyOne() throws Exception {
+        manager.install(pluginWith("g1", "p.A", GREETER_PLUGIN_BODY));
+        manager.install(pluginWith("g2", "p.A", GREETER_PLUGIN_BODY));
+        boot("g1");
+        boot("g2");
+
+        assertThat(manager.getExtensions(TestGreeter.class)).hasSize(2);
+
+        manager.stop("g1");
+        List<TestGreeter> remaining = manager.getExtensions(TestGreeter.class);
+        assertThat(remaining).hasSize(1);
+    }
+
+    @Test
+    void failedStartLeavesNoStaleRegistrations() throws Exception {
+        // Plugin registers an extension, then throws — start must roll back the registration.
+        manager.install(pluginWith("partial", "p.A", """
+                package p;
+                import com.defenestration1111111.plugin.api.Plugin;
+                import com.defenestration1111111.plugin.api.PluginContext;
+                import com.defenestration1111111.plugin.core.util.TestGreeter;
+                public class A implements Plugin, TestGreeter {
+                    @Override public void start(PluginContext ctx) {
+                        ctx.register(TestGreeter.class, this);
+                        throw new RuntimeException("boom");
+                    }
+                    @Override public void stop() {}
+                    @Override public String greet() { return "x"; }
+                }
+                """));
+        manager.resolve("partial");
+        manager.load("partial");
+
+        assertThatThrownBy(() -> manager.start("partial")).hasMessage("boom");
+        assertThat(manager.phase("partial")).isEqualTo(Phase.FAILED);
+        assertThat(manager.getExtensions(TestGreeter.class)).isEmpty();
+    }
+
+    @Test
+    void closeClearsAllRegistrations() throws Exception {
+        manager.install(pluginWith("g1", "p.A", GREETER_PLUGIN_BODY));
+        manager.install(pluginWith("g2", "p.A", GREETER_PLUGIN_BODY));
+        manager.startAll();
+        assertThat(manager.getExtensions(TestGreeter.class)).hasSize(2);
+
+        manager.close();
+        assertThat(manager.getExtensions(TestGreeter.class)).isEmpty();
     }
 
     // ---- helpers ----
