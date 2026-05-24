@@ -25,6 +25,7 @@
 
         <junit.version>6.0.0</junit.version>
         <assertj.version>3.27.3</assertj.version>
+        <spring-boot.version>3.5.3</spring-boot.version>
 
         <maven-compiler-plugin.version>3.14.0</maven-compiler-plugin.version>
         <maven-surefire-plugin.version>3.5.2</maven-surefire-plugin.version>
@@ -33,6 +34,13 @@
 
     <dependencyManagement>
         <dependencies>
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-dependencies</artifactId>
+                <version>${spring-boot.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
             <dependency>
                 <groupId>org.junit</groupId>
                 <artifactId>junit-bom</artifactId>
@@ -55,6 +63,12 @@
                 <groupId>com.defenestration1111111</groupId>
                 <artifactId>plugin-core</artifactId>
                 <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.defenestration1111111</groupId>
+                <artifactId>plugin-core</artifactId>
+                <version>${project.version}</version>
+                <type>test-jar</type>
             </dependency>
         </dependencies>
     </dependencyManagement>
