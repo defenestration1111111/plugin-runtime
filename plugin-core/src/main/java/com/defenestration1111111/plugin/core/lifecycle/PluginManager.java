@@ -4,23 +4,34 @@ import com.defenestration1111111.plugin.api.*;
 import com.defenestration1111111.plugin.core.classloader.PluginClassLoader;
 import com.defenestration1111111.plugin.core.discovery.DiscoveredPlugin;
 import com.defenestration1111111.plugin.core.discovery.DiscoveryReport;
+import com.defenestration1111111.plugin.core.discovery.PluginDiscovery;
 import com.defenestration1111111.plugin.core.extension.ExtensionRegistry;
+import com.defenestration1111111.plugin.core.hotreaload.PluginWatcher;
+import com.defenestration1111111.plugin.core.hotreaload.WatcherHandler;
 
 import java.io.IOException;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.net.MalformedURLException;
 import java.net.URL;
+import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 public final class PluginManager implements AutoCloseable {
+
+    private static final Logger LOG = Logger.getLogger(PluginManager.class.getName());
 
     private final ClassLoader hostClassLoader;
     private final Set<String> exportedPackages;
     private final Map<String, ManagedPlugin> plugins = new ConcurrentHashMap<>();
+    private final Map<Path, String> jarIndex = new ConcurrentHashMap<>();
     private final Map<String, DefaultPluginContext> contexts = new ConcurrentHashMap<>();
     private final ExtensionRegistry extensionRegistry = new ExtensionRegistry();
+    private volatile boolean autoStartOnDiscovery = true;
+    private volatile PluginWatcher watcher;
 
     public PluginManager(ClassLoader hostClassLoader) {
         this(hostClassLoader, PluginClassLoader.BASELINE_EXPORTED_PACKAGES);
@@ -39,6 +50,7 @@ public final class PluginManager implements AutoCloseable {
             throw new PluginLifecycleException(
                     "Plugin already installed: " + discovered.descriptor().id());
         }
+        jarIndex.put(discovered.jar(), discovered.descriptor().id());
     }
 
     public void install(DiscoveryReport report) {
@@ -181,8 +193,159 @@ public final class PluginManager implements AutoCloseable {
         return extensionRegistry.getExtensions(extensionPoint);
     }
 
+    public void reload(String id, Path newJar) {
+        Objects.requireNonNull(id, "id");
+        Objects.requireNonNull(newJar, "newJar");
+
+        // Read new descriptor first — fail fast before tearing down the live plugin.
+        DiscoveredPlugin discovered;
+        try {
+            discovered = PluginDiscovery.read(newJar);
+        } catch (RuntimeException e) {
+            throw new PluginLifecycleException("Failed to read new jar for reload of " + id, e);
+        }
+        if (!discovered.descriptor().id().equals(id)) {
+            throw new PluginLifecycleException(
+                    "Reload jar declares id '" + discovered.descriptor().id()
+                            + "', expected '" + id + "'");
+        }
+        performReload(id, discovered);
+    }
+
+    private void performReload(String id, DiscoveredPlugin discovered) {
+        ManagedPlugin oldMp = require(id);
+        ManagedPlugin freshMp = new ManagedPlugin(discovered.descriptor(), discovered.jar());
+        // Lock freshMp before it enters the map so concurrent callers block until fully started.
+        freshMp.lock.lock();
+        try {
+            oldMp.lock.lock();
+            try {
+                if (plugins.get(id) != oldMp) {
+                    throw new PluginLifecycleException("Plugin " + id + " was concurrently modified");
+                }
+
+                if (oldMp.phase == Phase.STARTED) {
+                    stop(id);
+                }
+                if (oldMp.phase == Phase.LOADED || oldMp.phase == Phase.STOPPED) {
+                    unload(id);
+                }
+                jarIndex.remove(oldMp.jar);
+                jarIndex.put(freshMp.jar, id);
+                plugins.put(id, freshMp);
+            } finally {
+                oldMp.lock.unlock();
+            }
+            // resolve/load/start re-enter freshMp.lock (ReentrantLock).
+            resolve(id);
+            load(id);
+            start(id);
+        } finally {
+            freshMp.lock.unlock();
+        }
+    }
+
+    public void uninstall(String id) {
+        ManagedPlugin mp = require(id);
+        mp.lock.lock();
+        try {
+            if (mp.phase == Phase.STARTED) {
+                try {
+                    stop(id);
+                } catch (RuntimeException ignore) {
+                    // best-effort; still proceed to remove
+                }
+            }
+            if (mp.phase == Phase.LOADED || mp.phase == Phase.STOPPED) {
+                try {
+                    unload(id);
+                } catch (RuntimeException ignore) {
+                    // best-effort
+                }
+            }
+            jarIndex.remove(mp.jar);
+            plugins.remove(id, mp);
+        } finally {
+            mp.lock.unlock();
+        }
+    }
+
+    public boolean isAutoStartOnDiscovery() {
+        return autoStartOnDiscovery;
+    }
+
+    public void setAutoStartOnDiscovery(boolean autoStart) {
+        this.autoStartOnDiscovery = autoStart;
+    }
+
+    public synchronized void attachWatcher(Path directory) throws IOException {
+        if (watcher != null) {
+            throw new IllegalStateException("Watcher already attached");
+        }
+        watcher = new PluginWatcher(directory, new  WatcherHandler() {
+            @Override public void onSettled(Path jar) {
+                handleSettled(jar);
+            }
+
+            @Override public void onDeleted(Path jar) {
+                handleDeleted(jar);
+            }
+        });
+    }
+
+    public synchronized void detachWatcher() throws IOException {
+        if (watcher == null) return;
+        watcher.close();
+        watcher = null;
+    }
+
+    void handleSettled(Path jar) {
+        DiscoveredPlugin discovered;
+        try {
+            discovered = PluginDiscovery.read(jar);
+        } catch (RuntimeException e) {
+            // Partial write or invalid descriptor — next event will retry.
+            LOG.log(Level.FINE, "Skipping settled event for " + jar + ": " + e.getMessage());
+            return;
+        }
+        String id = discovered.descriptor().id();
+        if (plugins.containsKey(id)) {
+            try {
+                performReload(id, discovered);
+            } catch (RuntimeException e) {
+                LOG.log(Level.WARNING, "Reload failed for " + id, e);
+            }
+        } else {
+            try {
+                install(discovered);
+                if (autoStartOnDiscovery) {
+                    resolve(id);
+                    load(id);
+                    start(id);
+                }
+            } catch (RuntimeException e) {
+                LOG.log(Level.WARNING, "Install via watcher failed for " + jar, e);
+            }
+        }
+    }
+
+    void handleDeleted(Path jar) {
+        String found = jarIndex.get(jar);
+        if (found == null) return;
+        try {
+            uninstall(found);
+        } catch (RuntimeException e) {
+            LOG.log(Level.WARNING, "Uninstall via watcher failed for " + found, e);
+        }
+    }
+
     @Override
     public void close() {
+        try {
+            detachWatcher();
+        } catch (IOException e) {
+            LOG.log(Level.WARNING, "Failed to close plugin watcher", e);
+        }
         stopAll();
         for (String id : plugins.keySet()) {
             ManagedPlugin mp = plugins.get(id);

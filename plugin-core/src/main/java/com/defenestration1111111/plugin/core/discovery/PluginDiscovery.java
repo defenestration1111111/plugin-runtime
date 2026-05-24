@@ -18,6 +18,10 @@ import java.util.stream.Stream;
 
 public final class PluginDiscovery {
 
+    public static DiscoveredPlugin read(Path jar) {
+        return new DiscoveredPlugin(jar, readDescriptor(jar));
+    }
+
     public DiscoveryReport scan(Path directory) {
         if (!Files.isDirectory(directory)) {
             throw new IllegalArgumentException("Not a directory: " + directory);

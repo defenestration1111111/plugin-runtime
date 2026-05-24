@@ -482,6 +482,196 @@ class PluginManagerTest {
         assertThat(manager.getExtensions(TestGreeter.class)).isEmpty();
     }
 
+    // ---- reload / uninstall ----
+
+    @Test
+    void reloadFromStartedSwapsToFreshInstance() throws Exception {
+        manager.install(normalPlugin("r1"));
+        boot("r1");
+        var oldCl = (PluginClassLoader) TestRecorder.classLoaders.get("r1");
+        assertThat(oldCl.isClosed()).isFalse();
+        TestRecorder.reset();
+
+        Path newJar = new PluginJarBuilder()
+                .withDescriptor("r1", "2.0", "p.A")
+                .withCompiledClass("p.A", NORMAL_PLUGIN_BODY)
+                .buildAt(tempDir, "r1-v2.jar");
+
+        manager.reload("r1", newJar);
+
+        assertThat(manager.phase("r1")).isEqualTo(Phase.STARTED);
+        assertThat(oldCl.isClosed()).isTrue();
+        assertThat(TestRecorder.startCount.get()).isEqualTo(1);
+        assertThat(TestRecorder.stopCount.get()).isEqualTo(1); // old was stopped
+        var newCl = (PluginClassLoader) TestRecorder.classLoaders.get("r1");
+        assertThat(newCl).isNotSameAs(oldCl);
+        assertThat(newCl.isClosed()).isFalse();
+    }
+
+    @Test
+    void reloadRejectsIdMismatch() throws Exception {
+        manager.install(normalPlugin("r1"));
+        boot("r1");
+        Path mismatched = new PluginJarBuilder()
+                .withDescriptor("r2", "1.0", "p.A")
+                .withCompiledClass("p.A", NORMAL_PLUGIN_BODY)
+                .buildAt(tempDir, "mismatched.jar");
+
+        assertThatExceptionOfType(PluginLifecycleException.class)
+                .isThrownBy(() -> manager.reload("r1", mismatched))
+                .withMessageContaining("expected 'r1'");
+        assertThat(manager.phase("r1")).isEqualTo(Phase.STARTED); // untouched
+    }
+
+    @Test
+    void reloadFailsFastOnInvalidJarLeavesOriginalUntouched() throws Exception {
+        manager.install(normalPlugin("r1"));
+        boot("r1");
+        var oldCl = (PluginClassLoader) TestRecorder.classLoaders.get("r1");
+
+        Path bogus = tempDir.resolve("bogus.jar");
+        java.nio.file.Files.write(bogus, new byte[]{1, 2, 3});
+
+        assertThatExceptionOfType(PluginLifecycleException.class)
+                .isThrownBy(() -> manager.reload("r1", bogus));
+        assertThat(manager.phase("r1")).isEqualTo(Phase.STARTED);
+        assertThat(oldCl.isClosed()).isFalse();
+    }
+
+    @Test
+    void reloadFromFailedReplacesAndStarts() throws Exception {
+        manager.install(missingMainClassPlugin("r1"));
+        manager.resolve("r1");
+        assertThatThrownBy(() -> manager.load("r1")).isInstanceOf(PluginLoadException.class);
+        assertThat(manager.phase("r1")).isEqualTo(Phase.FAILED);
+
+        Path good = new PluginJarBuilder()
+                .withDescriptor("r1", "1.0", "p.A")
+                .withCompiledClass("p.A", NORMAL_PLUGIN_BODY)
+                .buildAt(tempDir, "r1-good.jar");
+
+        manager.reload("r1", good);
+
+        assertThat(manager.phase("r1")).isEqualTo(Phase.STARTED);
+        assertThat(TestRecorder.startCount.get()).isEqualTo(1);
+    }
+
+    @Test
+    void reloadFromUnloadedReplacesAndStarts() throws Exception {
+        manager.install(normalPlugin("r1"));
+        manager.resolve("r1");
+        manager.load("r1");
+        manager.unload("r1");
+        assertThat(manager.phase("r1")).isEqualTo(Phase.UNLOADED);
+
+        Path next = new PluginJarBuilder()
+                .withDescriptor("r1", "2.0", "p.A")
+                .withCompiledClass("p.A", NORMAL_PLUGIN_BODY)
+                .buildAt(tempDir, "r1-next.jar");
+
+        manager.reload("r1", next);
+        assertThat(manager.phase("r1")).isEqualTo(Phase.STARTED);
+    }
+
+    @Test
+    void uninstallStopsUnloadsAndRemoves() throws Exception {
+        manager.install(normalPlugin("u1"));
+        boot("u1");
+        var cl = (PluginClassLoader) TestRecorder.classLoaders.get("u1");
+
+        manager.uninstall("u1");
+
+        assertThat(manager.ids()).doesNotContain("u1");
+        assertThat(cl.isClosed()).isTrue();
+        assertThat(TestRecorder.stopCount.get()).isEqualTo(1);
+    }
+
+    @Test
+    void uninstallOnFailedJustRemoves() throws Exception {
+        manager.install(missingMainClassPlugin("u1"));
+        manager.resolve("u1");
+        assertThatThrownBy(() -> manager.load("u1")).isInstanceOf(PluginLoadException.class);
+        assertThat(manager.phase("u1")).isEqualTo(Phase.FAILED);
+
+        manager.uninstall("u1");
+        assertThat(manager.ids()).doesNotContain("u1");
+    }
+
+    // ---- watcher event handlers (driven directly) ----
+
+    @Test
+    void handleSettledForUnknownInstallsAndAutoStarts() throws Exception {
+        Path jar = new PluginJarBuilder()
+                .withDescriptor("w1", "1.0", "p.A")
+                .withCompiledClass("p.A", NORMAL_PLUGIN_BODY)
+                .buildAt(tempDir, "w1.jar");
+
+        manager.handleSettled(jar);
+
+        assertThat(manager.phase("w1")).isEqualTo(Phase.STARTED);
+        assertThat(TestRecorder.startCount.get()).isEqualTo(1);
+    }
+
+    @Test
+    void handleSettledForUnknownInstallsButDoesNotStartWhenAutoStartOff() throws Exception {
+        manager.setAutoStartOnDiscovery(false);
+        Path jar = new PluginJarBuilder()
+                .withDescriptor("w2", "1.0", "p.A")
+                .withCompiledClass("p.A", NORMAL_PLUGIN_BODY)
+                .buildAt(tempDir, "w2.jar");
+
+        manager.handleSettled(jar);
+
+        assertThat(manager.phase("w2")).isEqualTo(Phase.DISCOVERED);
+        assertThat(TestRecorder.startCount.get()).isZero();
+    }
+
+    @Test
+    void handleSettledForKnownPluginReloads() throws Exception {
+        manager.install(normalPlugin("w3"));
+        boot("w3");
+        var oldCl = (PluginClassLoader) TestRecorder.classLoaders.get("w3");
+
+        Path next = new PluginJarBuilder()
+                .withDescriptor("w3", "2.0", "p.A")
+                .withCompiledClass("p.A", NORMAL_PLUGIN_BODY)
+                .buildAt(tempDir, "w3-v2.jar");
+
+        manager.handleSettled(next);
+
+        assertThat(manager.phase("w3")).isEqualTo(Phase.STARTED);
+        assertThat(oldCl.isClosed()).isTrue();
+    }
+
+    @Test
+    void handleSettledIgnoresInvalidJars() throws Exception {
+        Path bogus = tempDir.resolve("partial.jar");
+        java.nio.file.Files.write(bogus, new byte[]{1, 2, 3});
+
+        manager.handleSettled(bogus);
+
+        assertThat(manager.ids()).isEmpty();
+    }
+
+    @Test
+    void handleDeletedUninstallsByPath() throws Exception {
+        DiscoveredPlugin dp = normalPlugin("w4");
+        manager.install(dp);
+        boot("w4");
+        var cl = (PluginClassLoader) TestRecorder.classLoaders.get("w4");
+
+        manager.handleDeleted(dp.jar());
+
+        assertThat(manager.ids()).doesNotContain("w4");
+        assertThat(cl.isClosed()).isTrue();
+    }
+
+    @Test
+    void handleDeletedForUnknownPathIsNoOp() {
+        manager.handleDeleted(tempDir.resolve("does-not-exist.jar"));
+        assertThat(manager.ids()).isEmpty();
+    }
+
     // ---- helpers ----
 
     private DiscoveredPlugin pluginWith(String id, String fqn, String body) throws Exception {
