@@ -1,4 +1,4 @@
-# plugin-system
+# plugin-runtime
 
 A Java library for loading, isolating, and hot-reloading plugins at runtime.
 Each plugin runs in its own `ClassLoader`, so plugins can bundle their own dependencies
