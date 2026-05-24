@@ -6,8 +6,8 @@ import com.defenestration1111111.plugin.core.discovery.DiscoveredPlugin;
 import com.defenestration1111111.plugin.core.discovery.DiscoveryReport;
 import com.defenestration1111111.plugin.core.discovery.PluginDiscovery;
 import com.defenestration1111111.plugin.core.extension.ExtensionRegistry;
-import com.defenestration1111111.plugin.core.hotreaload.PluginWatcher;
-import com.defenestration1111111.plugin.core.hotreaload.WatcherHandler;
+import com.defenestration1111111.plugin.core.hotreload.PluginWatcher;
+import com.defenestration1111111.plugin.core.hotreload.WatcherHandler;
 
 import java.io.IOException;
 import java.lang.reflect.Constructor;

@@ -1,7 +1,7 @@
 package com.defenestration1111111.plugin.core.hotreload;
 
-import com.defenestration1111111.plugin.core.hotreaload.PluginWatcher;
-import com.defenestration1111111.plugin.core.hotreaload.WatcherHandler;
+import com.defenestration1111111.plugin.core.hotreload.PluginWatcher;
+import com.defenestration1111111.plugin.core.hotreload.WatcherHandler;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 

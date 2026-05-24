@@ -1,4 +1,4 @@
-package com.defenestration1111111.plugin.core.hotreaload;
+package com.defenestration1111111.plugin.core.hotreload;
 
 import java.io.IOException;
 import java.nio.file.ClosedWatchServiceException;
